@@ -1,333 +1,314 @@
 // ==========================================
-// RK RAJA XWD — Web Control Panel
-// Render Ready / Safe Demo Server
+//   RK RAJA XWD — BACKEND SERVER
+//   Facebook Cookie Loader + Mass Sender
 // ==========================================
 
 const path = require("path");
 const express = require("express");
 const http = require("http");
+const cors = require("cors");
 const { Server } = require("socket.io");
+const { login } = require("anuragxarohi"); // npm install anuragxarohi
 
 const app = express();
 
-app.use(express.json({ limit: "5mb" }));
+// ---------- MIDDLEWARE ----------
+app.use(cors({ origin: "*" }));
+app.use(express.json({ limit: "20mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+  cors: { origin: "*", methods: ["GET", "POST"] },
+  pingTimeout: 60000,
+  pingInterval: 25000,
+});
 
-// ---------- GLOBAL STATE ----------
-let targets = [];
-let currentIndex = 0;
-let isRunning = false;
-let isPaused = false;
-let isStopped = false;
-let timeInterval = 8000;
-let headerName = "RK RAJA XWD";
+// ---------- STATE ----------
+const tasks = {};       // taskId -> task object
+let taskCounter = 0;
+const startTime = Date.now();
 
-const stats = {
-  header: headerName,
-  totalLines: 0,
-  sent: 0,
-  failed: 0,
-  currentIndex: 0,
-  currentUID: "",
-  currentMsg: "",
-  startedAt: null,
-  elapsed: "00:00:00",
-  status: "idle",
-  logs: []
-};
+// ---------- HELPERS ----------
+function now() {
+  return new Date().toLocaleTimeString();
+}
 
-// ---------- LOGGING ----------
-function pushLog(type, msg) {
-  const entry = {
-    time: new Date().toLocaleTimeString(),
-    type,
-    msg
-  };
+function parseCookies(input) {
+  const t = (input || "").trim();
+  if (!t) throw new Error("Empty cookies");
 
-  stats.logs.push(entry);
-
-  if (stats.logs.length > 300) {
-    stats.logs.shift();
+  // JSON appstate format
+  if (t.startsWith("[")) {
+    const arr = JSON.parse(t);
+    if (!Array.isArray(arr)) throw new Error("Invalid appstate JSON");
+    return arr;
   }
 
+  // Raw cookie string → appstate
+  return t
+    .split(";")
+    .map((c) => {
+      const [key, ...rest] = c.trim().split("=");
+      return {
+        key: key?.trim(),
+        value: rest.join("=")?.trim(),
+        domain: ".facebook.com",
+        path: "/",
+        secure: true,
+      };
+    })
+    .filter((c) => c.key && c.value);
+}
+
+function parseTargets(text) {
+  return (text || "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("#"))
+    .map((l) => {
+      const parts = l.split("|").map((s) => s.trim());
+      if (parts.length < 2) return null;
+      const uid = parts[0];
+      const message = parts.slice(1).join(" | ");
+      if (!uid || !message) return null;
+      return { uid, message };
+    })
+    .filter(Boolean);
+}
+
+function broadcastLog(taskId, type, msg) {
+  const entry = { taskId, time: now(), type, msg };
+  console.log(`[${entry.time}] [${taskId || "SYS"}] ${msg}`);
   io.emit("log", entry);
 }
 
-// ---------- ELAPSED TIME ----------
-function updateElapsed() {
-  if (!stats.startedAt) return;
-
-  const ms = Date.now() - stats.startedAt;
-
-  const h = String(Math.floor(ms / 3600000)).padStart(2, "0");
-  const m = String(Math.floor((ms % 3600000) / 60000)).padStart(2, "0");
-  const s = String(Math.floor((ms % 60000) / 1000)).padStart(2, "0");
-
-  stats.elapsed = `${h}:${m}:${s}`;
+function broadcastStats(task) {
+  if (!task) return;
+  io.emit("stats", {
+    taskId: task.id,
+    sent: task.sent,
+    failed: task.failed,
+    idx: task.idx,
+    total: task.targets.length,
+  });
 }
 
-setInterval(() => {
-  updateElapsed();
-  io.emit("stats", stats);
-}, 1000);
+// ---------- ROUTES ----------
 
-// ---------- PARSE TARGETS ----------
-function parseTargets(text) {
-  const lines = String(text || "").split(/\r?\n/);
-  const out = [];
-
-  for (const raw of lines) {
-    const line = raw.trim();
-
-    if (!line || line.startsWith("#")) {
-      continue;
-    }
-
-    const parts = line.split("|").map(s => s.trim());
-
-    if (parts.length >= 2 && parts[0] && parts[1]) {
-      out.push({
-        uid: parts[0],
-        message: parts.slice(1).join(" | ")
-      });
-    }
-  }
-
-  return out;
-}
-
-// ---------- HEALTH CHECK ----------
+// Health check
 app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
+  res.json({ ok: true, service: "RK RAJA XWD", uptime: process.uptime() });
 });
 
-app.get("/health", (req, res) => {
+// LIVE MONITOR
+app.get("/api/monitor", (req, res) => {
+  const activeTasks = Object.values(tasks).filter((t) => t.running).length;
+  const totalSent = Object.values(tasks).reduce((s, t) => s + t.sent, 0);
   res.json({
-    ok: true,
-    name: "RK RAJA XWD",
-    status: stats.status,
-    uptime: process.uptime()
+    uptime: (Date.now() - startTime) / 1000,
+    activeTasks,
+    totalSent,
+    totalTasks: Object.keys(tasks).length,
   });
 });
 
-// ---------- START DEMO ----------
-app.post("/api/run", (req, res) => {
-  const {
-    targetsText,
-    interval,
-    header
-  } = req.body || {};
+// START TASK
+app.post("/api/start", async (req, res) => {
+  try {
+    const {
+      cookies,
+      targetsText,
+      threadId,
+      delay,
+      hatersName,
+      lastName,
+    } = req.body;
 
-  if (!targetsText) {
-    return res.status(400).json({
-      ok: false,
-      error: "Targets zaroori hain."
-    });
-  }
-
-  targets = parseTargets(targetsText);
-
-  if (targets.length === 0) {
-    return res.status(400).json({
-      ok: false,
-      error: "Targets parse nahi hue. Format: UID | Message"
-    });
-  }
-
-  currentIndex = 0;
-  isRunning = false;
-  isPaused = false;
-  isStopped = false;
-
-  stats.sent = 0;
-  stats.failed = 0;
-  stats.currentIndex = 0;
-  stats.currentUID = "";
-  stats.currentMsg = "";
-  stats.startedAt = null;
-  stats.elapsed = "00:00:00";
-  stats.status = "idle";
-  stats.logs = [];
-
-  headerName = header || "RK RAJA XWD";
-  stats.header = headerName;
-
-  timeInterval = Math.max(
-    1000,
-    parseInt(interval, 10) || 8000
-  );
-
-  stats.totalLines = targets.length;
-
-  pushLog(
-    "info",
-    `📄 ${targets.length} targets loaded.`
-  );
-
-  pushLog(
-    "info",
-    "🧪 Demo mode ready — no external messages are sent."
-  );
-
-  io.emit("stats", stats);
-
-  res.json({
-    ok: true,
-    total: targets.length,
-    mode: "demo"
-  });
-
-  setTimeout(startDemo, 500);
-});
-
-// ---------- DEMO LOOP ----------
-function startDemo() {
-  if (isRunning) return;
-
-  if (currentIndex >= targets.length) {
-    stats.status = "done";
-    io.emit("stats", stats);
-    return;
-  }
-
-  isRunning = true;
-  isStopped = false;
-  isPaused = false;
-
-  stats.startedAt = Date.now();
-  stats.status = "running";
-
-  pushLog(
-    "info",
-    `🚀 Demo started → interval ${timeInterval}ms`
-  );
-
-  io.emit("stats", stats);
-
-  processNextDemo();
-}
-
-function processNextDemo() {
-  if (isStopped || !isRunning || isPaused) {
-    return;
-  }
-
-  if (currentIndex >= targets.length) {
-    isRunning = false;
-
-    stats.status = "done";
-    stats.currentUID = "";
-    stats.currentMsg = "";
-
-    pushLog(
-      "success",
-      "🎉 Demo completed."
-    );
-
-    io.emit("stats", stats);
-    return;
-  }
-
-  const target = targets[currentIndex];
-
-  stats.currentUID = target.uid;
-  stats.currentMsg = target.message;
-  stats.currentIndex = currentIndex + 1;
-
-  io.emit("stats", stats);
-
-  // Safe demo: nothing is sent externally.
-  setTimeout(() => {
-    if (isStopped || !isRunning || isPaused) {
-      return;
+    // Validate
+    if (!cookies) {
+      return res.status(400).json({ ok: false, error: "Cookies required" });
+    }
+    if (!targetsText && !threadId) {
+      return res.status(400).json({ ok: false, error: "Message file ya Thread ID required" });
     }
 
-    stats.sent++;
+    // Parse cookies
+    let appState;
+    try {
+      appState = parseCookies(cookies);
+      if (!appState.length) throw new Error("No cookies parsed");
+    } catch (e) {
+      return res.status(400).json({ ok: false, error: "Invalid cookies: " + e.message });
+    }
 
-    pushLog(
-      "success",
-      `✅ [${currentIndex + 1}/${targets.length}] ${target.uid} → Demo processed`
-    );
+    // Build targets
+    let targets = [];
+    if (threadId && threadId.trim()) {
+      // Single target — thread ID
+      targets = [{ uid: threadId.trim(), message: targetsText || "Hello" }];
+    } else {
+      targets = parseTargets(targetsText);
+    }
 
-    currentIndex++;
+    if (!targets.length) {
+      return res.status(400).json({ ok: false, error: "No valid targets (format: UID | Message)" });
+    }
 
-    io.emit("stats", stats);
+    // Config
+    const interval = Math.max(2000, (parseInt(delay) || 10) * 1000);
+    const header = [hatersName, lastName].filter(Boolean).join(" ").trim() || "RK RAJA XWD";
 
-    setTimeout(
-      processNextDemo,
-      timeInterval
-    );
-  }, 300);
+    broadcastLog(null, "info", `> Injecting cookies...`);
+    broadcastLog(null, "info", `> Header: ${header}`);
+    broadcastLog(null, "info", `> Targets: ${targets.length} | Delay: ${interval}ms`);
+
+    // Login with cookies
+    login({ appState }, { online: true, selfListen: false }, (err, api) => {
+      if (err) {
+        broadcastLog(null, "error", "✖ Login failed: " + (err.error || err));
+        return res.status(401).json({
+          ok: false,
+          error: "Login failed. Cookies check karo (expired ho sakti hain).",
+        });
+      }
+
+      // Create task
+      const taskId = "TASK-" + (++taskCounter) + "-" + Date.now().toString(36);
+      const task = {
+        id: taskId,
+        api,
+        targets,
+        idx: 0,
+        running: true,
+        paused: false,
+        header,
+        interval,
+        sent: 0,
+        failed: 0,
+        startedAt: Date.now(),
+        userId: api.getCurrentUserID(),
+      };
+      tasks[taskId] = task;
+
+      broadcastLog(taskId, "success", `✔ ACCESS GRANTED | UID: ${task.userId}`);
+      broadcastLog(taskId, "info", `> Auto-send starting in 1s...`);
+
+      res.json({
+        ok: true,
+        taskId,
+        uid: task.userId,
+        total: targets.length,
+      });
+
+      // Auto-start
+      setTimeout(() => runTask(taskId), 1000);
+    });
+  } catch (err) {
+    console.error("Start error:", err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// RUN TASK LOOP
+function runTask(taskId) {
+  const t = tasks[taskId];
+  if (!t || !t.running || t.paused) return;
+
+  if (t.idx >= t.targets.length) {
+    t.running = false;
+    broadcastLog(taskId, "success", `🎉 MISSION COMPLETE | Sent: ${t.sent} | Failed: ${t.failed}`);
+    broadcastStats(t);
+    return;
+  }
+
+  const { uid, message } = t.targets[t.idx];
+
+  io.emit("progress", {
+    taskId,
+    currentUID: uid,
+    currentMsg: message,
+    idx: t.idx + 1,
+    total: t.targets.length,
+  });
+
+  t.api.sendMessageMqtt({ body: message }, uid, (err) => {
+    if (!t.running) return; // stopped mid-send
+
+    if (err) {
+      t.failed++;
+      broadcastLog(taskId, "error", `✖ [${t.idx + 1}/${t.targets.length}] ${uid} → FAIL`);
+    } else {
+      t.sent++;
+      broadcastLog(taskId, "success", `✔ [${t.idx + 1}/${t.targets.length}] ${uid} → SENT`);
+    }
+
+    broadcastStats(t);
+    t.idx++;
+    setTimeout(() => runTask(taskId), t.interval);
+  });
 }
+
+// STOP TASK
+app.post("/api/stop", (req, res) => {
+  const { taskId } = req.body;
+  const t = tasks[taskId];
+  if (!t) {
+    return res.status(404).json({ ok: false, error: "Task not found" });
+  }
+  t.running = false;
+  broadcastLog(taskId, "warn", `⚠ TERMINATED at ${t.idx}/${t.targets.length}`);
+  broadcastStats(t);
+  res.json({ ok: true });
+});
+
+// PAUSE TASK
+app.post("/api/pause", (req, res) => {
+  const { taskId } = req.body;
+  const t = tasks[taskId];
+  if (!t) return res.status(404).json({ ok: false, error: "Task not found" });
+  t.paused = true;
+  broadcastLog(taskId, "warn", `⏸ PAUSED`);
+  res.json({ ok: true });
+});
+
+// RESUME TASK
+app.post("/api/resume", (req, res) => {
+  const { taskId } = req.body;
+  const t = tasks[taskId];
+  if (!t) return res.status(404).json({ ok: false, error: "Task not found" });
+  t.paused = false;
+  broadcastLog(taskId, "info", `▶ RESUMED`);
+  runTask(taskId);
+  res.json({ ok: true });
+});
 
 // ---------- SOCKET.IO ----------
-io.on("connection", socket => {
-  socket.emit("stats", stats);
+io.on("connection", (socket) => {
+  console.log("🔌 Client connected:", socket.id);
+  socket.emit("hello", { ok: true, time: now() });
 
-  stats.logs.forEach(log => {
-    socket.emit("log", log);
+  socket.on("subscribe", (taskId) => {
+    if (taskId) socket.join(taskId);
   });
 
-  socket.on("pause", () => {
-    if (!isRunning) return;
-
-    isPaused = true;
-    stats.status = "paused";
-
-    pushLog(
-      "warn",
-      "⏸️ Paused"
-    );
-
-    io.emit("stats", stats);
-  });
-
-  socket.on("resume", () => {
-    if (!isRunning) return;
-
-    isPaused = false;
-    stats.status = "running";
-
-    pushLog(
-      "info",
-      "▶️ Resumed"
-    );
-
-    io.emit("stats", stats);
-
-    processNextDemo();
-  });
-
-  socket.on("stop", () => {
-    if (!isRunning) return;
-
-    isRunning = false;
-    isStopped = true;
-    isPaused = false;
-
-    stats.status = "stopped";
-
-    pushLog(
-      "warn",
-      `🛑 Stopped at ${currentIndex}/${targets.length}`
-    );
-
-    io.emit("stats", stats);
+  socket.on("disconnect", () => {
+    console.log("🔌 Client disconnected:", socket.id);
   });
 });
 
-// ---------- RENDER SERVER ----------
-const PORT = Number(process.env.PORT) || 10000;
+// ---------- CLEANUP (old tasks) ----------
+setInterval(() => {
+  const cutoff = Date.now() - 30 * 60 * 1000; // 30 min
+  for (const id in tasks) {
+    if (!tasks[id].running && tasks[id].startedAt < cutoff) {
+      delete tasks[id];
+    }
+  }
+}, 60000);
 
+// ---------- START SERVER ----------
+const PORT = process.env.PORT || 3000;
 server.listen(PORT, "0.0.0.0", () => {
-  console.log("");
-  console.log("================================");
-  console.log("     RK RAJA XWD SERVER ONLINE");
-  console.log("================================");
-  console.log(`📡 Port: ${PORT}`);
-  console.log("🌐 Listening on 0.0.0.0");
-  console.log("================================");
+  console.log(`\n🌐 RK RAJA XWD server running on port ${PORT}\n`);
 });
