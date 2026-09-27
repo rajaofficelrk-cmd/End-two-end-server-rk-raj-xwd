@@ -1,185 +1,241 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>RK RAJA XWD — Control Panel</title>
-  <link rel="stylesheet" href="style.css" />
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RK RAJA XWD // ROOT ACCESS</title>
+<link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <video id="bgvideo" autoplay muted loop playsinline>
-    <source src="/bg.mp4" type="video/mp4" />
-  </video>
-  <div class="overlay"></div>
-  <canvas id="matrix"></canvas>
 
-  <main class="hud">
-    <header class="topbar">
-      <div class="brand">
-        <span class="glitch" data-text="RK RAJA XWD">RK RAJA XWD</span>
-      </div>
-      <div class="status">
-        <span id="statusDot" class="dot idle"></span>
-        <span id="statusText">IDLE</span>
-        <span class="uid">UID: <b id="userId">—</b></span>
-      </div>
-    </header>
+<!-- 3D Video / Matrix BG -->
+<canvas id="matrix"></canvas>
+<video id="bgvideo" autoplay muted loop playsinline>
+  <source src="/bg.mp4" type="video/mp4" />
+</video>
+<div class="scanlines"></div>
 
-    <!-- ═══════ INPUT SECTION ═══════ -->
-    <section class="inputs">
-      <div class="input-box">
-        <label>🍪 COOKIES (JSON ya raw string)</label>
-        <textarea id="cookies" placeholder='[{"key":"c_user","value":"1000..."},{"key":"xs","value":"..."}]
-YA
-c_user=1000...; xs=...; fr=...; datr=...'></textarea>
-      </div>
+<div class="wrap">
 
-      <div class="input-box">
-        <label>🎯 TARGETS (har line: UID | Message)</label>
-        <textarea id="targets" placeholder="1000123456789 | Hello bhai kaise ho
-1000987654321 | Aaj ka offer check karo
-1000111222333 | Reply karo jaldi"></textarea>
-      </div>
+  <!-- HEADER -->
+  <div class="topbar">
+    <span class="glitch" data-text="RK RAJA XWD">RK RAJA XWD</span>
+    <span class="blink">[ ROOT@KALI:~# ]</span>
+  </div>
 
-      <div class="row-inputs">
-        <div class="input-box small">
-          <label>⏱️ TIME (ms)</label>
-          <input id="interval" type="number" value="8000" min="2000" />
-        </div>
-        <div class="input-box small">
-          <label>📛 HEADER NAME</label>
-          <input id="header" type="text" value="RK RAJA XWD" />
-        </div>
-        <button id="btnRun" class="big-run">▶ RUN</button>
-      </div>
-    </section>
+  <!-- LIVE MONITOR -->
+  <div class="card">
+    <h2 class="title">▶ LIVE MONITOR</h2>
+    <div class="row"><span>&gt; UPTIME</span><b id="uptime">0h 0m 0s</b></div>
+    <div class="row"><span>&gt; ACTIVE TASKS</span><b id="activeTasks">0</b></div>
+    <div class="row"><span>&gt; MESSAGES SENT</span><b id="totalSent">0</b></div>
+    <div class="row"><span>&gt; STATUS</span><b id="connStatus" class="red">OFFLINE</b></div>
+  </div>
 
-    <!-- ═══════ STATS ═══════ -->
-    <section class="stats-grid">
-      <div class="card"><div class="label">SENT</div><div class="value" id="sent">0</div></div>
-      <div class="card"><div class="label">FAILED</div><div class="value red" id="failed">0</div></div>
-      <div class="card"><div class="label">LINES</div><div class="value" id="lines">0 / 0</div></div>
-      <div class="card"><div class="label">ELAPSED</div><div class="value" id="elapsed">00:00:00</div></div>
-    </section>
+  <!-- START TASK -->
+  <div class="card">
+    <h2 class="title">▶ START TASK</h2>
 
-    <!-- ═══════ LIVE PANEL ═══════ -->
-    <section class="panels">
-      <div class="panel current">
-        <div class="panel-title">▶ CURRENT TARGET</div>
-        <div class="row"><span>UID:</span> <b id="curUID">—</b></div>
-        <div class="row"><span>MSG:</span> <b id="curMsg">—</b></div>
-      </div>
-      <div class="panel terminal">
-        <div class="panel-title">▶ LIVE TERMINAL</div>
-        <div id="logs" class="logs"></div>
-      </div>
-    </section>
+    <label class="lbl">[ Cookie Input Method ]</label>
+    <select id="cookieMethod" class="inp">
+      <option value="paste">PASTE_COOKIES</option>
+      <option value="file">UPLOAD_FILE</option>
+    </select>
 
-    <footer class="controls">
-      <button id="btnPause">⏸ PAUSE</button>
-      <button id="btnResume">⏵ RESUME</button>
-      <button id="btnStop" class="danger">■ STOP</button>
-    </footer>
-  </main>
+    <div id="cookiePasteBox">
+      <label class="lbl">[ Cookies ]</label>
+      <textarea id="cookies" class="inp ta" placeholder='[{"key":"c_user","value":"..."}] OR c_user=...; xs=...;'></textarea>
+    </div>
 
-  <script src="/socket.io/socket.io.js"></script>
-  <script>
-    const socket = io();
-    const $ = (id) => document.getElementById(id);
+    <div id="cookieFileBox" style="display:none">
+      <label class="lbl">[ Cookie File ]</label>
+      <input type="file" id="cookieFile" accept=".json,.txt" class="file" />
+    </div>
 
-    // ---------- RUN ----------
-    $("btnRun").onclick = async () => {
-      const cookies = $("cookies").value.trim();
-      const targetsText = $("targets").value.trim();
-      const interval = $("interval").value;
-      const header = $("header").value;
+    <label class="lbl">[ Message File ]</label>
+    <input type="file" id="msgFile" accept=".txt,.csv" class="file" />
 
-      if (!cookies) return alert("Cookies paste karo!");
-      if (!targetsText) return alert("Targets paste karo!");
+    <label class="lbl">[ Thread ID ]</label>
+    <input type="text" id="threadId" class="inp" placeholder="optional single target uid" />
 
-      $("logs").innerHTML = "";
-      $("btnRun").disabled = true;
-      $("btnRun").textContent = "⏳ LOGIN...";
+    <label class="lbl">[ Delay (sec) ]</label>
+    <input type="number" id="delay" class="inp" value="10" min="2" />
 
-      try {
-        const res = await fetch("/api/run", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cookies, targetsText, interval, header }),
-        });
-        const data = await res.json();
-        if (!data.ok) {
-          alert("❌ " + (data.error || "Error"));
-          $("btnRun").disabled = false;
-          $("btnRun").textContent = "▶ RUN";
-        } else {
-          $("btnRun").textContent = "✅ RUNNING";
-        }
-      } catch (e) {
-        alert("Network error: " + e.message);
-        $("btnRun").disabled = false;
-        $("btnRun").textContent = "▶ RUN";
-      }
-    };
+    <label class="lbl">[ Haters Name ]</label>
+    <input type="text" id="hatersName" class="inp" value="RK" />
 
-    $("btnPause").onclick  = () => socket.emit("pause");
-    $("btnResume").onclick = () => socket.emit("resume");
-    $("btnStop").onclick   = () => socket.emit("stop");
+    <label class="lbl">[ Last Name ]</label>
+    <input type="text" id="lastName" class="inp" value="RAJA XWD" />
 
-    // ---------- LIVE STATS ----------
-    socket.on("stats", (s) => {
-      $("sent").textContent = s.sent;
-      $("failed").textContent = s.failed;
-      $("lines").textContent = `${s.currentIndex} / ${s.totalLines}`;
-      $("elapsed").textContent = s.elapsed;
-      $("userId").textContent = s.userId || "—";
-      $("curUID").textContent = s.currentUID || "—";
-      $("curMsg").textContent = s.currentMsg || "—";
+    <button id="startBtn" class="btn green">▶ EXECUTE</button>
+  </div>
 
-      $("statusDot").className = "dot " + s.status;
-      $("statusText").textContent = s.status.toUpperCase();
+  <!-- STOP TASK -->
+  <div class="card">
+    <h2 class="title">▶ STOP TASK</h2>
+    <label class="lbl">[ Task ID ]</label>
+    <input type="text" id="stopTaskId" class="inp" placeholder="TASK-..." />
+    <button id="stopBtn" class="btn red">■ TERMINATE</button>
+  </div>
 
-      if (s.status === "stopped" || s.status === "done") {
-        $("btnRun").disabled = false;
-        $("btnRun").textContent = "▶ RUN";
-      }
+  <!-- LOG -->
+  <div class="card">
+    <h2 class="title">▶ TERMINAL LOG</h2>
+    <div id="log" class="log">&gt; Waiting for connection...<span class="cursor">_</span></div>
+  </div>
+
+</div>
+
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<script>
+const BACKEND = window.location.hostname.includes("netlify")
+  ? "https://YOUR-RENDER-BACKEND.onrender.com"
+  : window.location.origin;
+
+const socket = io(BACKEND, { reconnection: true });
+const $ = (id) => document.getElementById(id);
+let currentTaskId = null;
+
+$("cookieMethod").onchange = () => {
+  const m = $("cookieMethod").value;
+  $("cookiePasteBox").style.display = m === "paste" ? "block" : "none";
+  $("cookieFileBox").style.display = m === "file" ? "block" : "none";
+};
+
+function readFile(input) {
+  return new Promise((res, rej) => {
+    const f = input.files[0];
+    if (!f) return res(null);
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.onerror = rej;
+    r.readAsText(f);
+  });
+}
+
+$("startBtn").onclick = async () => {
+  const method = $("cookieMethod").value;
+  let cookies = method === "paste" ? $("cookies").value.trim() : ((await readFile($("cookieFile"))) || "");
+  const msgText = (await readFile($("msgFile"))) || "";
+  const threadId = $("threadId").value.trim();
+
+  if (!cookies) return log("error", "✖ Cookies required!");
+  if (!msgText && !threadId) return log("error", "✖ Message file ya Thread ID do!");
+
+  $("startBtn").disabled = true;
+  $("startBtn").textContent = "⏳ INITIALIZING...";
+  log("info", "> Injecting cookies...");
+
+  try {
+    const res = await fetch(BACKEND + "/api/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        cookies, targetsText: msgText || threadId, threadId: threadId || null,
+        delay: $("delay").value,
+        hatersName: $("hatersName").value,
+        lastName: $("lastName").value,
+      }),
     });
-
-    // ---------- LOGS ----------
-    socket.on("log", (l) => {
-      const box = $("logs");
-      const el = document.createElement("div");
-      el.className = "log-line " + l.type;
-      el.textContent = `[${l.time}] ${l.msg}`;
-      box.appendChild(el);
-      box.scrollTop = box.scrollHeight;
-      if (box.children.length > 400) box.removeChild(box.firstChild);
-    });
-
-    // ---------- MATRIX RAIN ----------
-    const canvas = document.getElementById("matrix");
-    const ctx = canvas.getContext("2d");
-    let cols, drops;
-    function resize() {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-      cols = Math.floor(canvas.width / 16);
-      drops = Array(cols).fill(1);
+    const d = await res.json();
+    if (!d.ok) {
+      log("error", "✖ " + d.error);
+      $("startBtn").disabled = false;
+      $("startBtn").textContent = "▶ EXECUTE";
+      return;
     }
-    resize();
-    window.addEventListener("resize", resize);
-    const chars = "RKRAJAXWD01アイウエオカキクケコ<>/\\01";
-    setInterval(() => {
-      ctx.fillStyle = "rgba(0,0,0,0.08)";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = "#00ff88";
-      ctx.font = "16px monospace";
-      for (let i = 0; i < drops.length; i++) {
-        const t = chars[Math.floor(Math.random() * chars.length)];
-        ctx.fillText(t, i * 16, drops[i] * 16);
-        if (drops[i] * 16 > canvas.height && Math.random() > 0.975) drops[i] = 0;
-        drops[i]++;
-      }
-    }, 55);
-  </script>
+    currentTaskId = d.taskId;
+    $("stopTaskId").value = d.taskId;
+    socket.emit("subscribe", d.taskId);
+    log("success", `✔ ACCESS GRANTED: ${d.taskId} | UID ${d.uid} | ${d.total} targets`);
+    $("startBtn").textContent = "✔ RUNNING";
+  } catch (e) {
+    log("error", "✖ " + e.message);
+    $("startBtn").disabled = false;
+    $("startBtn").textContent = "▶ EXECUTE";
+  }
+};
+
+$("stopBtn").onclick = async () => {
+  const taskId = $("stopTaskId").value.trim();
+  if (!taskId) return log("error", "✖ Task ID required");
+  const res = await fetch(BACKEND + "/api/stop", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ taskId }),
+  });
+  const d = await res.json();
+  if (!d.ok) return log("error", "✖ " + d.error);
+  log("warn", "⚠ Terminate signal sent");
+  $("startBtn").disabled = false;
+  $("startBtn").textContent = "▶ EXECUTE";
+};
+
+async function refreshMonitor() {
+  try {
+    const r = await fetch(BACKEND + "/api/monitor");
+    const d = await r.json();
+    const s = Math.floor(d.uptime);
+    $("uptime").textContent = `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m ${s%60}s`;
+    $("activeTasks").textContent = d.activeTasks;
+    $("totalSent").textContent = d.totalSent;
+  } catch {}
+}
+setInterval(refreshMonitor, 2000);
+refreshMonitor();
+
+socket.on("connect", () => {
+  $("connStatus").textContent = "ONLINE";
+  $("connStatus").className = "green";
+  log("success", "✔ Backend connected");
+});
+socket.on("disconnect", () => {
+  $("connStatus").textContent = "OFFLINE";
+  $("connStatus").className = "red";
+  log("warn", "⚠ Connection lost, reconnecting...");
+});
+socket.on("connect_error", () => log("warn", "⚠ Connection lost, reconnecting..."));
+
+socket.on("log", (l) => log(l.type, l.msg));
+socket.on("progress", (p) => log("info", `> [${p.idx}/${p.total}] → ${p.currentUID}`));
+socket.on("stats", () => {});
+
+function log(type, msg) {
+  const box = $("log");
+  const t = new Date().toLocaleTimeString();
+  const line = document.createElement("div");
+  line.className = "log-line " + type;
+  line.textContent = `[${t}] ${msg}`;
+  box.appendChild(line);
+  box.scrollTop = box.scrollHeight;
+  if (box.children.length > 300) box.removeChild(box.firstChild);
+}
+
+// ---------- MATRIX RAIN ----------
+const canvas = document.getElementById("matrix");
+const ctx = canvas.getContext("2d");
+let cols, drops;
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  cols = Math.floor(canvas.width / 16);
+  drops = Array(cols).fill(1);
+}
+resize();
+window.addEventListener("resize", resize);
+const chars = "RKRAJAXWD01アイウエオカキクケコサシスセソ<>/\\{}[]#$%&01";
+setInterval(() => {
+  ctx.fillStyle = "rgba(0,0,0,0.08)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#00ff41";
+  ctx.font = "16px monospace";
+  for (let i = 0; i < drops.length; i++) {
+    const t = chars[Math.floor(Math.random() * chars.length)];
+    ctx.fillText(t, i * 16, drops[i] * 16);
+    if (drops[i] * 16 > canvas.height && Math.random() > 0.975) drops[i] = 0;
+    drops[i]++;
+  }
+}, 55);
+</script>
 </body>
 </html>
