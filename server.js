@@ -1,35 +1,33 @@
 // ==========================================
-//   RK RAJA XWD - Facebook Auto Sender Backend
+//   RK RAJA XWD — Web Control Panel (No Files)
+//   Cookies + Targets page se paste karo
 // ==========================================
 
-const fs = require("fs");
 const path = require("path");
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const { login } = require("anuragxarohi"); // npm install anuragxarohi
 
-// ---------- ⚙️ CONFIG ----------
-const CONFIG = {
-  headerName: "RK RAJA XWD",
-  timeInterval: 8000,          // Har message ke beech gap (ms)
-  appStateFile: "appstate.json",
-  inputFile: "targets.txt",
-  fileFormat: "pipe",          // "pipe" (|) or "csv" (,)
-  autoStart: true,
-  port: 3000,
-};
-// --------------------------------
-
-// ---------- 🌐 SERVER SETUP ----------
 const app = express();
+app.use(express.json({ limit: "5mb" }));
 app.use(express.static(path.join(__dirname, "public")));
+
 const server = http.createServer(app);
 const io = new Server(server);
 
-// ---------- 📊 LIVE STATS ----------
+// ---------- 📊 GLOBAL STATE ----------
+let api = null;
+let targets = [];         // [{uid, message}]
+let currentIndex = 0;
+let isRunning = false;
+let isPaused = false;
+let isStopped = false;
+let timeInterval = 8000;  // default
+let headerName = "RK RAJA XWD";
+
 const stats = {
-  header: CONFIG.headerName,
+  header: headerName,
   loggedIn: false,
   userId: null,
   totalLines: 0,
@@ -40,18 +38,16 @@ const stats = {
   currentMsg: "",
   startedAt: null,
   elapsed: "00:00:00",
+  status: "idle",
   logs: [],
-  status: "idle",   // idle | running | paused | stopped | done
 };
 
 function pushLog(type, msg) {
-  const time = new Date().toLocaleTimeString();
-  const entry = { time, type, msg };
+  const entry = { time: new Date().toLocaleTimeString(), type, msg };
   stats.logs.push(entry);
-  if (stats.logs.length > 200) stats.logs.shift();
+  if (stats.logs.length > 300) stats.logs.shift();
   io.emit("log", entry);
 }
-
 function updateElapsed() {
   if (!stats.startedAt) return;
   const ms = Date.now() - stats.startedAt;
@@ -60,76 +56,113 @@ function updateElapsed() {
   const s = String(Math.floor((ms % 60000) / 1000)).padStart(2, "0");
   stats.elapsed = `${h}:${m}:${s}`;
 }
+setInterval(() => { updateElapsed(); io.emit("stats", stats); }, 1000);
 
-setInterval(() => {
-  updateElapsed();
-  io.emit("stats", stats);
-}, 1000);
-
-// ---------- 📥 LOAD TARGETS ----------
-function loadTargets() {
-  const filePath = path.resolve(CONFIG.inputFile);
-  if (!fs.existsSync(filePath)) {
-    console.error(`❌ File nahi mili: ${filePath}`);
-    process.exit(1);
-  }
-  const lines = fs.readFileSync(filePath, "utf8").trim().split(/\r?\n/);
+// ---------- 📥 PARSE TARGETS (from textarea) ----------
+function parseTargets(text) {
+  const lines = text.split(/\r?\n/);
   const out = [];
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
+  for (const raw of lines) {
+    const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
-    let uid, message;
-    if (CONFIG.fileFormat === "pipe") {
-      [uid, message] = line.split("|").map((s) => s.trim());
-    } else {
-      if (i === 0 && line.toLowerCase().startsWith("uid")) continue;
-      const p = line.split(",");
-      uid = p[0]?.trim();
-      message = p.slice(1).join(",").trim();
+    const parts = line.split("|").map((s) => s.trim());
+    if (parts.length >= 2 && parts[0] && parts[1]) {
+      out.push({ uid: parts[0], message: parts.slice(1).join(" | ") });
     }
-    if (uid && message) out.push({ uid, message });
   }
   return out;
 }
 
-// ---------- 🔐 LOGIN + AUTO START ----------
-let api = null;
-let targets = [];
-let currentIndex = 0;
-let isRunning = false;
-let isStopped = false;
-let isPaused = false;
+// ---------- 🔐 COOKIES PARSER ----------
+// Accepts either JSON array of cookies or raw cookie string
+function parseCookies(input) {
+  const trimmed = input.trim();
+  if (trimmed.startsWith("[")) {
+    // JSON appstate
+    return JSON.parse(trimmed);
+  }
+  // Raw cookie string → convert to appstate format
+  return trimmed
+    .split(";")
+    .map((c) => {
+      const [key, ...v] = c.trim().split("=");
+      return { key: key?.trim(), value: v.join("=")?.trim(), domain: ".facebook.com", path: "/" };
+    })
+    .filter((c) => c.key && c.value);
+}
 
-function boot() {
-  targets = loadTargets();
+// ---------- 🚀 /api/run ----------
+app.post("/api/run", (req, res) => {
+  const { cookies, targetsText, interval, header } = req.body;
+
+  if (!cookies || !targetsText) {
+    return res.status(400).json({ ok: false, error: "Cookies aur targets dono zaroori hain." });
+  }
+
+  // Reset state
+  stats.sent = 0;
+  stats.failed = 0;
+  stats.currentIndex = 0;
+  stats.currentUID = "";
+  stats.currentMsg = "";
+  stats.startedAt = null;
+  stats.elapsed = "00:00:00";
+  stats.status = "idle";
+  stats.logs = [];
+  currentIndex = 0;
+  isRunning = false;
+  isPaused = false;
+  isStopped = false;
+
+  headerName = header || "RK RAJA XWD";
+  stats.header = headerName;
+  timeInterval = Math.max(2000, parseInt(interval) || 8000);
+
+  targets = parseTargets(targetsText);
   stats.totalLines = targets.length;
-  console.log(`📄 Loaded ${targets.length} lines.`);
+  if (targets.length === 0) {
+    return res.status(400).json({ ok: false, error: "Targets parse nahi hue. Format: UID | Message" });
+  }
 
-  const appState = JSON.parse(fs.readFileSync(CONFIG.appStateFile, "utf8"));
-  console.log("🔐 Logging in with cookies...");
+  let appState;
+  try {
+    appState = parseCookies(cookies);
+    if (!appState.length) throw new Error("Empty cookies");
+  } catch (err) {
+    return res.status(400).json({ ok: false, error: "Cookies format galat: " + err.message });
+  }
 
+  pushLog("info", `📄 ${targets.length} targets mili. Cookies OK.`);
+  pushLog("info", "🔐 Facebook se login ho raha hai...");
+  io.emit("stats", stats);
+
+  // Login
   login({ appState }, { online: true, selfListen: false }, (err, apiInstance) => {
     if (err) {
-      console.error("❌ Login failed:", err);
-      pushLog("error", "Login failed: " + (err.error || err));
-      return;
+      pushLog("error", "❌ Login fail: " + (err.error || err));
+      stats.status = "stopped";
+      io.emit("stats", stats);
+      return res.json({ ok: false, error: "Login failed. Cookies check karo." });
     }
     api = apiInstance;
     stats.loggedIn = true;
     stats.userId = api.getCurrentUserID();
-    pushLog("success", `Login OK → UID ${stats.userId}`);
+    pushLog("success", `✅ Login OK → UID ${stats.userId}`);
     io.emit("stats", stats);
 
-    if (CONFIG.autoStart) setTimeout(startSending, 1500);
+    res.json({ ok: true, userId: stats.userId, total: targets.length });
+
+    // Auto-start after 1s
+    setTimeout(startSending, 1000);
   });
-}
+});
 
 // ---------- 🚀 SEND LOOP ----------
 function startSending() {
-  if (isRunning) return;
+  if (isRunning || !api) return;
   if (currentIndex >= targets.length) {
     stats.status = "done";
-    pushLog("info", "✅ Saare messages already send ho chuke.");
+    pushLog("success", "🎉 Saare messages send ho gaye!");
     io.emit("stats", stats);
     return;
   }
@@ -138,7 +171,7 @@ function startSending() {
   isPaused = false;
   stats.startedAt = Date.now();
   stats.status = "running";
-  pushLog("info", "🚀 Auto-send shuru...");
+  pushLog("info", `🚀 Auto-send shuru → interval ${timeInterval}ms`);
   io.emit("stats", stats);
   sendNext();
 }
@@ -164,30 +197,31 @@ function sendNext() {
   api.sendMessageMqtt({ body: message }, uid, (err) => {
     if (err) {
       stats.failed++;
-      pushLog("error", `❌ [${currentIndex + 1}] ${uid} → Fail`);
+      pushLog("error", `❌ [${currentIndex + 1}/${targets.length}] ${uid} → Fail`);
     } else {
       stats.sent++;
       pushLog("success", `✅ [${currentIndex + 1}/${targets.length}] ${uid} → Sent`);
     }
     io.emit("stats", stats);
     currentIndex++;
-    setTimeout(sendNext, CONFIG.timeInterval);
+    setTimeout(sendNext, timeInterval);
   });
 }
 
-// ---------- 🎮 SOCKET EVENTS ----------
+// ---------- 🎮 SOCKET ----------
 io.on("connection", (socket) => {
   socket.emit("stats", stats);
   stats.logs.forEach((l) => socket.emit("log", l));
 
-  socket.on("start", () => startSending());
   socket.on("pause", () => {
+    if (!isRunning) return;
     isPaused = true;
     stats.status = "paused";
     pushLog("warn", "⏸️ Paused");
     io.emit("stats", stats);
   });
   socket.on("resume", () => {
+    if (!isRunning) return;
     isPaused = false;
     stats.status = "running";
     pushLog("info", "▶️ Resumed");
@@ -195,6 +229,7 @@ io.on("connection", (socket) => {
     sendNext();
   });
   socket.on("stop", () => {
+    if (!isRunning) return;
     isRunning = false;
     isStopped = true;
     stats.status = "stopped";
@@ -203,8 +238,8 @@ io.on("connection", (socket) => {
   });
 });
 
-// ---------- ▶️ GO ----------
-server.listen(CONFIG.port, () => {
-  console.log(`\n🌐 Dashboard: http://localhost:${CONFIG.port}\n`);
-  boot();
+// ---------- ▶️ START SERVER ----------
+const PORT = 3000;
+server.listen(PORT, () => {
+  console.log(`\n🌐 Dashboard: http://localhost:${PORT}\n`);
 });
