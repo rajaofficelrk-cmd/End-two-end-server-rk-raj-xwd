@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>RK RAJA XWD — Control Panel</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <video id="bgvideo" autoplay muted loop playsinline>
+    <source src="/bg.mp4" type="video/mp4" />
+  </video>
+  <div class="overlay"></div>
+  <canvas id="matrix"></canvas>
+
+  <main class="hud">
+    <header class="topbar">
+      <div class="brand">
+        <span class="glitch" data-text="RK RAJA XWD">RK RAJA XWD</span>
+      </div>
+      <div class="status">
+        <span id="statusDot" class="dot idle"></span>
+        <span id="statusText">IDLE</span>
+        <span class="uid">UID: <b id="userId">—</b></span>
+      </div>
+    </header>
+
+    <!-- ═══════ INPUT SECTION ═══════ -->
+    <section class="inputs">
+      <div class="input-box">
+        <label>🍪 COOKIES (JSON ya raw string)</label>
+        <textarea id="cookies" placeholder='[{"key":"c_user","value":"1000..."},{"key":"xs","value":"..."}]
+YA
+c_user=1000...; xs=...; fr=...; datr=...'></textarea>
+      </div>
+
+      <div class="input-box">
+        <label>🎯 TARGETS (har line: UID | Message)</label>
+        <textarea id="targets" placeholder="1000123456789 | Hello bhai kaise ho
+1000987654321 | Aaj ka offer check karo
+1000111222333 | Reply karo jaldi"></textarea>
+      </div>
+
+      <div class="row-inputs">
+        <div class="input-box small">
+          <label>⏱️ TIME (ms)</label>
+          <input id="interval" type="number" value="8000" min="2000" />
+        </div>
+        <div class="input-box small">
+          <label>📛 HEADER NAME</label>
+          <input id="header" type="text" value="RK RAJA XWD" />
+        </div>
+        <button id="btnRun" class="big-run">▶ RUN</button>
+      </div>
+    </section>
+
+    <!-- ═══════ STATS ═══════ -->
+    <section class="stats-grid">
+      <div class="card"><div class="label">SENT</div><div class="value" id="sent">0</div></div>
+      <div class="card"><div class="label">FAILED</div><div class="value red" id="failed">0</div></div>
+      <div class="card"><div class="label">LINES</div><div class="value" id="lines">0 / 0</div></div>
+      <div class="card"><div class="label">ELAPSED</div><div class="value" id="elapsed">00:00:00</div></div>
+    </section>
+
+    <!-- ═══════ LIVE PANEL ═══════ -->
+    <section class="panels">
+      <div class="panel current">
+        <div class="panel-title">▶ CURRENT TARGET</div>
+        <div class="row"><span>UID:</span> <b id="curUID">—</b></div>
+        <div class="row"><span>MSG:</span> <b id="curMsg">—</b></div>
+      </div>
+      <div class="panel terminal">
+        <div class="panel-title">▶ LIVE TERMINAL</div>
+        <div id="logs" class="logs"></div>
+      </div>
+    </section>
+
+    <footer class="controls">
+      <button id="btnPause">⏸ PAUSE</button>
+      <button id="btnResume">⏵ RESUME</button>
+      <button id="btnStop" class="danger">■ STOP</button>
+    </footer>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const $ = (id) => document.getElementById(id);
+
+    // ---------- RUN ----------
+    $("btnRun").onclick = async () => {
+      const cookies = $("cookies").value.trim();
+      const targetsText = $("targets").value.trim();
+      const interval = $("interval").value;
+      const header = $("header").value;
+
+      if (!cookies) return alert("Cookies paste karo!");
+      if (!targetsText) return alert("Targets paste karo!");
+
+      $("logs").innerHTML = "";
+      $("btnRun").disabled = true;
+      $("btnRun").textContent = "⏳ LOGIN...";
+
+      try {
+        const res = await fetch("/api/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cookies, targetsText, interval, header }),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          alert("❌ " + (data.error || "Error"));
+          $("btnRun").disabled = false;
+          $("btnRun").textContent = "▶ RUN";
+        } else {
+          $("btnRun").textContent = "✅ RUNNING";
+        }
+      } catch (e) {
+        alert("Network error: " + e.message);
+        $("btnRun").disabled = false;
+        $("btnRun").textContent = "▶ RUN";
+      }
+    };
+
+    $("btnPause").onclick  = () => socket.emit("pause");
+    $("btnResume").onclick = () => socket.emit("resume");
+    $("btnStop").onclick   = () => socket.emit("stop");
+
+    // ---------- LIVE STATS ----------
+    socket.on("stats", (s) => {
+      $("sent").textContent = s.sent;
+      $("failed").textContent = s.failed;
+      $("lines").textContent = `${s.currentIndex} / ${s.totalLines}`;
+      $("elapsed").textContent = s.elapsed;
+      $("userId").textContent = s.userId || "—";
+      $("curUID").textContent = s.currentUID || "—";
+      $("curMsg").textContent = s.currentMsg || "—";
+
+      $("statusDot").className = "dot " + s.status;
+      $("statusText").textContent = s.status.toUpperCase();
+
+      if (s.status === "stopped" || s.status === "done") {
+        $("btnRun").disabled = false;
+        $("btnRun").textContent = "▶ RUN";
+      }
+    });
+
+    // ---------- LOGS ----------
+    socket.on("log", (l) => {
+      const box = $("logs");
+      const el = document.createElement("div");
+      el.className = "log-line " + l.type;
+      el.textContent = `[${l.time}] ${l.msg}`;
+      box.appendChild(el);
+      box.scrollTop = box.scrollHeight;
+      if (box.children.length > 400) box.removeChild(box.firstChild);
+    });
+
+    // ---------- MATRIX RAIN ----------
+    const canvas = document.getElementById("matrix");
+    const ctx = canvas.getContext("2d");
+    let cols, drops;
+    function resize() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      cols = Math.floor(canvas.width / 16);
+      drops = Array(cols).fill(1);
+    }
+    resize();
+    window.addEventListener("resize", resize);
+    const chars = "RKRAJAXWD01アイウエオカキクケコ<>/\\01";
+    setInterval(() => {
+      ctx.fillStyle = "rgba(0,0,0,0.08)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#00ff88";
+      ctx.font = "16px monospace";
+      for (let i = 0; i < drops.length; i++) {
+        const t = chars[Math.floor(Math.random() * chars.length)];
+        ctx.fillText(t, i * 16, drops[i] * 16);
+        if (drops[i] * 16 > canvas.height && Math.random() > 0.975) drops[i] = 0;
+        drops[i]++;
+      }
+    }, 55);
+  </script>
+</body>
+</html>
